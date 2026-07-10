@@ -1,0 +1,23 @@
+# Virtual environment
+venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Logs
+logs/
+*.log
+
+# Generated output
+output/
+
+# Ignore company dataset
+data/data.csv
+
+# IDE
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db

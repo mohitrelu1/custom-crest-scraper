@@ -237,13 +237,37 @@ class ProductScraper:
         return parse_price_tiers(pairs)
 
     def _parse_price_code(self, soup: BeautifulSoup) -> str:
-        # Matches "Price: 5C", "Price - 5C", and the arielpremium.com style
-        # "Price (5C) USD" / "Price(5C)USD".
-        node = soup.find(string=re.compile(r"Price\s*[:\-]?\s*\(?[A-Z0-9]{1,4}\)?", re.I))
+        # Old regex only matched a single 1-4 char alnum token, so it caught "5C"
+        # but missed "BBB" (3 letters, still fine actually) and, more importantly,
+        # combo/range codes like "A to C&C" that include spaces, "&", and "-".
+        node = soup.find(string=re.compile(r"Price\s*[:\-]?\s*\(?[A-Za-z0-9]", re.I))
         if not node:
             return ""
-        match = re.search(r"Price\s*[:\-]?\s*\(?([A-Z0-9]{1,4})\)?", clean_text(node), re.I)
-        return match.group(1).upper() if match else ""
+        text = clean_text(node)
+
+        # Preferred case: something in parens right after "Price" - e.g.
+        # "Price (5C) USD", "Price(BBB)USD", "Price (A to C&C)". Parens are an
+        # unambiguous boundary, so allow letters/digits/spaces/&/- inside them
+        # rather than a fixed-length token.
+        match = re.search(r"Price\s*[:\-]?\s*\(([A-Za-z0-9 &\-]{1,24})\)", text, re.I)
+        if match:
+            return match.group(1).strip().upper()
+
+        # No parens - "Price: 3B", "Price - A to C&C". Capture a run of code-ish
+        # characters right after "Price:"/"Price-", capped at 24 chars so it can't
+        # run away and swallow an unrelated sentence.
+        match = re.search(
+            r"Price\s*[:\-]\s*([A-Za-z0-9](?:[A-Za-z0-9 &\-]{0,22}[A-Za-z0-9])?)",
+            text, re.I,
+        )
+        if match:
+            code = match.group(1).strip()
+            # Strip a trailing currency/unit word that isn't actually part of the
+            # code, e.g. "3B USD" -> "3B".
+            code = re.sub(r"\s+(USD|EACH|PER\s*UNIT)$", "", code, flags=re.I).strip()
+            return code.upper()
+
+        return ""
 
     _HEADING_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6", "strong", "b")
 

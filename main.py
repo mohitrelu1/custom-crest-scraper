@@ -76,13 +76,24 @@ def print_summary(results: list) -> None:
     ok = [r for r in results if r["status"] == "ok"]
     failed = [r for r in results if r["status"] != "ok"]
 
-    log.info("=" * 60)
-    log.info("Done: %d ok, %d failed, %d total", len(ok), len(failed), len(results))
+    # Split failures into "404 Not Found" (dead product page - expected, not a bug)
+    # vs everything else (timeouts, 5xx, parsing errors, etc. - worth a closer look).
+    not_found = [r for r in failed if r["error"].startswith("404")]
+    other_errors = [r for r in failed if not r["error"].startswith("404")]
 
     if failed:
-        log.error("Failed URLs:")
+        # file_only=True: this goes to errors.log (for later inspection) but is
+        # filtered out of the console, so a long run's terminal output stays
+        # the short summary below instead of a wall of repeated URLs.
+        log.error("Failed URLs:", extra={"file_only": True})
         for row in failed:
-            log.error("  %s -> %s", row["url"], row["error"])
+            log.error("  %s -> %s", row["url"], row["error"], extra={"file_only": True})
+
+    log.info("=" * 60)
+    log.info("Total : %d", len(results))
+    log.info("Success : %d", len(ok))
+    log.info("404 : %d", len(not_found))
+    log.info("Other Errors : %d", len(other_errors))
     log.info("=" * 60)
 
 

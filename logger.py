@@ -34,9 +34,24 @@ except ImportError:
 _CONFIGURED = False
 
 
+class _FileOnlyFilter(logging.Filter):
+    """
+    Blocks console output for any record logged with extra={"file_only": True}.
+    File handlers don't get this filter, so those records still land in
+    scraper_YYYYMMDD.log / errors_YYYYMMDD.log as normal - they just don't
+    clutter the terminal. Used for the per-URL failed list in main.py, so a
+    3000+ row run's console output stays a short summary instead of a wall
+    of repeated URLs (which are already visible in errors.log).
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not getattr(record, "file_only", False)
+
+
 def _build_console_handler() -> logging.Handler:
     """Console handler: colour-coded if colorlog is available, plain otherwise."""
     handler = logging.StreamHandler()
+    handler.addFilter(_FileOnlyFilter())
 
     if _HAS_COLORLOG:
         formatter = colorlog.ColoredFormatter(
