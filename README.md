@@ -3,6 +3,7 @@
 Scrapes product name, SKU, price tiers, and spec details from
 arielpremium.com product pages listed in `data/data.csv`.
 
+
 ## Setup (Windows, VS Code terminal)
 
 ```
@@ -18,13 +19,12 @@ custom-crest-scraper/
 ├── data/
 │   └── data.csv          # input: manu_id, manu_sku, product_name, prod_page_url
 ├── output/
-│   └── output.csv        # written by main.py
+│   └── output.csv         # written by main.py
 ├── logs/
-│   ├── scraper_YYYYMMDD.log   # full run log
-│   └── errors_YYYYMMDD.log    # ERROR-level only, i.e. failed URLs
-├── scraper.py             # ProductScraper class - single product extraction
+│   └── scraper_YYYYMMDD.log
+├── scraper.py             # scrape_product(url) - single product extraction
 ├── utils.py                # cleaning / parsing helpers, retry decorator
-├── logger.py                # shared colour-coded logger, replaces print()
+├── logger.py                # shared logger, replaces print()
 ├── main.py                  # CLI entry point, loops over the CSV
 └── requirements.txt
 ```
@@ -46,8 +46,7 @@ python main.py --all           # all ~3000 rows
 
 The run saves partial progress every 25 rows, so if it crashes or you
 Ctrl+C partway through, `output/output.csv` still has everything
-scraped up to that point. Failed URLs are also collected in
-`logs/errors_YYYYMMDD.log` and printed as a summary at the end of the run.
+scraped up to that point.
 
 ## Output columns
 
@@ -71,7 +70,8 @@ the pricing table / "Item ID:" label / Features heading match what
 `scraper.py` expects (see the docstring at the top of `scraper.py`).
 The selectors are written to walk the page structure rather than rely
 on guessed CSS class names, but the site can change, and it's worth
-one manual check before a long run.
+one manual check before a long run — same as Step 6 in the original
+plan.
 
 ## If they later ask for Selenium / Playwright
 
@@ -81,6 +81,6 @@ the extra complexity:
 
 ```
 pip install selenium
-# or
+
 pip install playwright && playwright install
 ```
