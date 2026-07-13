@@ -18,6 +18,7 @@ import time
 
 from logger import get_logger
 from scraper import ProductScraper
+from utils import format_qty
 
 log = get_logger(__name__)
 
@@ -25,10 +26,9 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_CSV = os.path.join(BASE_DIR, "data", "data.csv")
 OUTPUT_CSV = os.path.join(BASE_DIR, "output", "output.csv")
 
-OUTPUT_FIELDS = [
-    "url", "sku", "name", "price_tiers", "min_price",
-    "price_code", "dimensions", "features", "status", "error",
-]
+# Only what the client's database needs. Nothing else goes in the CSV -
+# no status, no error, no fields that weren't asked for.
+OUTPUT_FIELDS = ["sku", "quantity", "price", "price_code"]
 
 SAVE_EVERY = 25  # write partial progress to disk every N rows
 
@@ -64,34 +64,40 @@ def load_rows(limit: int = None) -> list:
     return rows[:limit] if limit else rows
 
 
-def save_results(results: list) -> None:
+def save_results(csv_rows: list) -> None:
+    """Write the CSV - only successfully scraped business data, one row per
+    quantity/price tier. Failed products never reach this list at all
+    (see main()); there is no status/error column to filter out here."""
     os.makedirs(os.path.dirname(OUTPUT_CSV), exist_ok=True)
     with open(OUTPUT_CSV, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=OUTPUT_FIELDS)
         writer.writeheader()
-        writer.writerows(results)
+        writer.writerows(csv_rows)
 
 
-def print_summary(results: list) -> None:
-    ok = [r for r in results if r["status"] == "ok"]
-    failed = [r for r in results if r["status"] != "ok"]
-
+def print_summary(total: int, success_count: int, failed: list) -> None:
+    """
+    `failed` is a list of (url, error_message) tuples - covers both actual
+    scrape failures (404s, timeouts, exceptions) and products that loaded
+    fine but had no usable price tiers to write. None of this ever goes in
+    the CSV; it's log-only.
+    """
     # Split failures into "404 Not Found" (dead product page - expected, not a bug)
     # vs everything else (timeouts, 5xx, parsing errors, etc. - worth a closer look).
-    not_found = [r for r in failed if r["error"].startswith("404")]
-    other_errors = [r for r in failed if not r["error"].startswith("404")]
+    not_found = [f for f in failed if f[1].startswith("404")]
+    other_errors = [f for f in failed if not f[1].startswith("404")]
 
     if failed:
         # file_only=True: this goes to errors.log (for later inspection) but is
         # filtered out of the console, so a long run's terminal output stays
         # the short summary below instead of a wall of repeated URLs.
         log.error("Failed URLs:", extra={"file_only": True})
-        for row in failed:
-            log.error("  %s -> %s", row["url"], row["error"], extra={"file_only": True})
+        for url, error in failed:
+            log.error("  %s -> %s", url, error, extra={"file_only": True})
 
     log.info("=" * 60)
-    log.info("Total : %d", len(results))
-    log.info("Success : %d", len(ok))
+    log.info("Total : %d", total)
+    log.info("Success : %d", success_count)
     log.info("404 : %d", len(not_found))
     log.info("Other Errors : %d", len(other_errors))
     log.info("=" * 60)
@@ -106,7 +112,11 @@ def main():
     log.info("Loaded %d row(s) to scrape", len(rows))
 
     scraper = ProductScraper()
-    results = []
+
+    csv_rows = []       # what actually gets written to output.csv - clean business data only
+    failed = []          # (url, error) tuples - log file only, never CSV
+    total = 0
+    success_count = 0
 
     for i, row in enumerate(rows, start=1):
         url = (row.get("prod_page_url") or "").strip()
@@ -116,19 +126,39 @@ def main():
             log.warning("Row %d has no prod_page_url - skipping", i)
             continue
 
+        total += 1
         log.info("[%d/%d] scraping %s", i, len(rows), url)
         result = scraper.scrape_product(url, fallback_sku=fallback_sku)
-        results.append(result)
+
+        if result["status"] == "ok" and result["tiers"]:
+            # One CSV row per quantity/price tier - a product with 5 tiers
+            # produces 5 rows, all sharing the same sku and price_code.
+            for qty, price in result["tiers"]:
+                csv_rows.append({
+                    "sku": result["sku"],
+                    "quantity": format_qty(qty),
+                    "price": price,
+                    "price_code": result["price_code"],
+                })
+            success_count += 1
+        elif result["status"] == "ok":
+            # Page loaded fine but no pricing table matched - nothing valid
+            # to put in the CSV, so log it instead of writing a blank/error row.
+            log.warning("No price tiers found for %s (sku=%s)", url, result["sku"])
+            failed.append((url, "No price tiers found"))
+        else:
+            # 404 / timeout / parse exception - logged only, never written to the CSV.
+            failed.append((url, result["error"]))
 
         if i % SAVE_EVERY == 0:
-            save_results(results)
-            log.info("Progress saved (%d rows so far)", i)
+            save_results(csv_rows)
+            log.info("Progress saved (%d CSV rows so far)", len(csv_rows))
 
         if i < len(rows):
             time.sleep(args.delay)
 
-    save_results(results)
-    print_summary(results)
+    save_results(csv_rows)
+    print_summary(total, success_count, failed)
 
 
 if __name__ == "__main__":

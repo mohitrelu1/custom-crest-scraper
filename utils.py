@@ -78,30 +78,6 @@ def clean_price(value: str):
         return None
 
 
-def parse_price_tiers(pairs: list) -> str:
-    """
-    Turn [(50, 7.57), (200, 7.10), (500, 6.83)] into 'qty:price' joined by '|'.
-    Skips any pair where qty or price is missing.
-    """
-    parts = []
-    for qty, price in pairs:
-        if qty is None or price is None:
-            continue
-        qty_str = str(int(qty)) if float(qty).is_integer() else str(qty)
-        parts.append(f"{qty_str}:{price}")
-    return "|".join(parts)
-
-
-def min_price_from_tiers(tiers_str: str):
-    """'50:7.57|200:7.1|500:6.83' -> 6.83 (lowest price, i.e. best break)."""
-    if not tiers_str:
-        return None
-    prices = []
-    for pair in tiers_str.split("|"):
-        if ":" not in pair:
-            continue
-        _, price = pair.split(":", 1)
-        price = clean_price(price)
-        if price is not None:
-            prices.append(price)
-    return min(prices) if prices else None
+def format_qty(qty) -> str:
+    """100.0 -> '100' ; 12.5 -> '12.5'. Keeps quantity columns clean in the CSV."""
+    return str(int(qty)) if float(qty).is_integer() else str(qty)

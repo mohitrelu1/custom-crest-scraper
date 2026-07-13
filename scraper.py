@@ -3,26 +3,34 @@ scraper.py
 ----------
 Everything that talks to a single product page lives here.
 
+Only the fields the client actually needs go into the result: SKU, the
+qty/price pairs from the pricing table, and the price code. Nothing else
+is scraped (no name, no dimensions, no features) - if a requirement adds
+one of those back, add its parser back too, but don't scrape "extra"
+fields on spec.
+
 >>> from scraper import ProductScraper
 >>> s = ProductScraper()
 >>> s.scrape_product("https://www.arielpremium.com/some-product", fallback_sku="ABC123")
-{'url': ..., 'sku': ..., 'name': ..., 'price_tiers': ..., 'min_price': ...,
- 'price_code': ..., 'dimensions': ..., 'features': ..., 'status': 'ok', 'error': ''}
+{'sku': ..., 'tiers': [(50, 7.57), (200, 7.10), (500, 6.83)],
+ 'price_code': ..., 'status': 'ok', 'error': ''}
+
+`tiers` is a list of (quantity, price) tuples straight from the pricing
+table - main.py is responsible for turning each tuple into its own CSV
+row (one row per quantity/price, not one row per product).
 
 BEFORE A FULL RUN: open one product page in Chrome, right-click ->
-Inspect, and confirm these three things still match the site:
+Inspect, and confirm these two things still match the site:
 
   1. Somewhere on the page there's a label like "Item ID:" followed by
      the SKU text (used by `_parse_sku`).
   2. The pricing table has rows of quantity/price pairs - look for a
      <table> whose header row mentions "Price" or "Qty"
      (used by `_parse_price_table`).
-  3. There's a heading containing the word "Features" followed by a
-     <ul> of bullet points (used by `_parse_features`).
 
-If the site's HTML has changed, update the three `_parse_*` methods
-below - the rest of the pipeline (retry, logging, CSV writing) doesn't
-need to change.
+If the site's HTML has changed, update the `_parse_*` methods below -
+the rest of the pipeline (retry, logging, CSV writing) doesn't need to
+change.
 """
 
 import re
@@ -31,7 +39,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from logger import get_logger
-from utils import clean_price, clean_text, min_price_from_tiers, parse_price_tiers, retry
+from utils import clean_price, clean_text, retry
 
 log = get_logger(__name__)
 
@@ -71,18 +79,16 @@ class ProductScraper:
     # ------------------------------------------------------------------ #
     def scrape_product(self, url: str, fallback_sku: str = "") -> dict:
         """
-        Scrape one product page. Never raises - always returns a dict,
-        with status='error' and an 'error' message if something went wrong.
+        Scrape one product page. Never raises - always returns a dict.
+
+        On success: {"sku", "tiers", "price_code", "status": "ok", "error": ""}
+        On failure: {"sku": "", "tiers": [], "price_code": "", "status": "error",
+                     "error": "<reason, for the log file only - never written to CSV>"}
         """
         result = {
-            "url": url,
             "sku": "",
-            "name": "",
-            "price_tiers": "",
-            "min_price": "",
+            "tiers": [],
             "price_code": "",
-            "dimensions": "",
-            "features": "",
             "status": "error",
             "error": "",
         }
@@ -90,31 +96,22 @@ class ProductScraper:
         try:
             soup = self._fetch(url)
 
-            result["name"] = self._parse_name(soup)
             result["sku"] = self._parse_sku(soup) or fallback_sku
-
-            tiers = self._parse_price_table(soup)
-            result["price_tiers"] = tiers
-            result["min_price"] = min_price_from_tiers(tiers)
-
+            result["tiers"] = self._parse_price_table(soup)
             result["price_code"] = self._parse_price_code(soup)
-            result["dimensions"] = self._parse_dimensions(soup)
-            result["features"] = self._parse_features(soup)
 
             result["status"] = "ok"
-            n_tiers = len(result["price_tiers"].split("|")) if result["price_tiers"] else 0
-            n_features = len(result["features"].split("; ")) if result["features"] else 0
             log.info(
-                "OK  %s (sku=%s, price_tiers=%d, features=%d, dimensions=%s)",
-                url, result["sku"], n_tiers, n_features,
-                "found" if result["dimensions"] else "missing",
+                "OK  %s (sku=%s, tiers=%d)",
+                url, result["sku"], len(result["tiers"]),
             )
 
         except PageNotFoundError as exc:
             result["error"] = str(exc)
             log.warning("SKIP %s -> %s", url, exc)
             # Nothing more to do for a dead URL - fall through and return this
-            # error result so main.py's loop moves on to the next row.
+            # error result so main.py's loop moves on to the next row. This
+            # error never reaches the CSV - main.py only logs it.
 
         except Exception as exc:  # noqa: BLE001 - we want to catch everything else here
             result["error"] = str(exc)
@@ -137,21 +134,6 @@ class ProductScraper:
     # ------------------------------------------------------------------ #
     # Field parsers - update these if the site markup changes
     # ------------------------------------------------------------------ #
-    # Text that shows up as a heading on nearly every page of this site but is never
-    # the actual product name - a raw, un-rendered template placeholder for whichever
-    # Bootstrap modal happens to be first in the DOM (color disclaimer, login, etc).
-    _NAME_BOILERPLATE = {"modal title"}
-
-    def _parse_name(self, soup: BeautifulSoup) -> str:
-        # Prefer <h1>, but this site sometimes has only one <h1> on the entire page
-        # and it's the modal placeholder above, with the real name sitting in <h2>.
-        for tag_name in ("h1", "h2", "h3"):
-            for tag in soup.find_all(tag_name):
-                text = clean_text(tag.get_text())
-                if text and text.lower() not in self._NAME_BOILERPLATE:
-                    return text
-        return ""
-
     def _parse_sku(self, soup: BeautifulSoup) -> str:
         # Prefer a dedicated label tag whose ENTIRE text is just "Item ID:" (how the
         # real product's own ID is marked up: <strong>Item ID:</strong> WTV-LP18).
@@ -177,7 +159,14 @@ class ProductScraper:
                 return match.group(1)
         return ""
 
-    def _parse_price_table(self, soup: BeautifulSoup) -> str:
+    def _parse_price_table(self, soup: BeautifulSoup) -> list:
+        """
+        Returns a list of (quantity, price) tuples - one tuple per pricing tier,
+        e.g. [(50, 7.57), (200, 7.10), (500, 6.83)]. Pairs missing a qty or a
+        price are dropped. Each tuple becomes its OWN row in the output CSV -
+        a product with 5 tiers produces 5 rows, all sharing the same SKU and
+        price_code (see main.py).
+        """
         table = None
         for candidate in soup.find_all("table"):
             header_text = clean_text(candidate.get_text()).lower()
@@ -185,7 +174,7 @@ class ProductScraper:
                 table = candidate
                 break
         if table is None:
-            return ""
+            return []
 
         rows = table.find_all("tr")
 
@@ -210,7 +199,7 @@ class ProductScraper:
                 (clean_price(q), clean_price(p))
                 for q, p in zip(qty_row, price_row)
             ]
-            return parse_price_tiers(pairs)
+            return [(q, p) for q, p in pairs if q is not None and p is not None]
 
         # Layout B (fallback): one qty/price pair per row, or two columns per row,
         # with a genuine header row (e.g. "Qty | Price") separate from the data rows.
@@ -233,8 +222,9 @@ class ProductScraper:
         for qty_text, price_text in zip(qty_cells, price_cells):
             qty = clean_price(qty_text)
             price = clean_price(price_text)
-            pairs.append((qty, price))
-        return parse_price_tiers(pairs)
+            if qty is not None and price is not None:
+                pairs.append((qty, price))
+        return pairs
 
     def _parse_price_code(self, soup: BeautifulSoup) -> str:
         # Old regex only matched a single 1-4 char alnum token, so it caught "5C"
@@ -268,44 +258,3 @@ class ProductScraper:
             return code.upper()
 
         return ""
-
-    _HEADING_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6", "strong", "b")
-
-    def _parse_dimensions(self, soup: BeautifulSoup) -> str:
-        # Case 1: inline "Dimensions: 5.5in x 8.5in" as one text node.
-        node = soup.find(string=re.compile(r"Dimensions?\s*:", re.I))
-        if node:
-            text = clean_text(node)
-            match = re.search(r"Dimensions?\s*:\s*(.+)", text, re.I)
-            if match and match.group(1).strip():
-                return match.group(1).strip()
-
-        # Case 2: bare "Dimensions" heading (e.g. <h5>Dimensions</h5>) with the value
-        # in the next element/text node, and no colon anywhere.
-        heading = soup.find(
-            lambda tag: tag.name in ProductScraper._HEADING_TAGS
-            and re.fullmatch(r"dimensions?", tag.get_text(strip=True), re.I)
-        )
-        if heading:
-            # Walk forward and skip any text that's still part of the heading tag
-            # itself (find_next()/next_elements() visit a tag's own children first).
-            for candidate in heading.next_elements:
-                if getattr(candidate, "parent", None) is heading:
-                    continue
-                if isinstance(candidate, str) and clean_text(candidate):
-                    return clean_text(candidate)
-
-        return ""
-
-    def _parse_features(self, soup: BeautifulSoup) -> str:
-        heading = soup.find(
-            lambda tag: tag.name in ProductScraper._HEADING_TAGS
-            and "feature" in tag.get_text(strip=True).lower()
-        )
-        if not heading:
-            return ""
-        ul = heading.find_next("ul")
-        if not ul:
-            return ""
-        bullets = [clean_text(li.get_text()) for li in ul.find_all("li")]
-        return "; ".join(b for b in bullets if b)

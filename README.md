@@ -1,9 +1,14 @@
 # custom-crest-scraper
 
 A resilient product-data scraper for arielpremium.com. Reads a list of
-product page URLs from a CSV, scrapes name / SKU / pricing / dimensions /
-features from each one, and writes a clean output CSV — without ever
-crashing partway through a run because one page 404s or times out.
+product page URLs from a CSV, scrapes only what the client's database
+needs — SKU, quantity, price, price code — and writes a clean output
+CSV, one row per pricing tier, without ever crashing partway through a
+run because one page 404s or times out.
+
+Scraping is requirement-driven: only the four fields above are
+extracted. Nothing else (name, dimensions, features, reviews, etc.) is
+scraped.
 
 ---
 
