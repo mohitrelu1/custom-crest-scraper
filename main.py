@@ -28,7 +28,7 @@ OUTPUT_CSV = os.path.join(BASE_DIR, "output", "output.csv")
 
 # Only what the client's database needs. Nothing else goes in the CSV -
 # no status, no error, no fields that weren't asked for.
-OUTPUT_FIELDS = ["sku", "quantity", "price", "price_code"]
+OUTPUT_FIELDS = ["url", "sku", "quantity", "price", "price_code"]
 
 SAVE_EVERY = 25  # write partial progress to disk every N rows
 
@@ -135,6 +135,7 @@ def main():
             # produces 5 rows, all sharing the same sku and price_code.
             for qty, price in result["tiers"]:
                 csv_rows.append({
+                    "url": url,
                     "sku": result["sku"],
                     "quantity": format_qty(qty),
                     "price": price,

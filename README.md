@@ -34,10 +34,10 @@ For each row in `data/data.csv`, the scraper:
 
 1. Fetches the product page (`requests`, with retry-with-backoff on
    transient failures).
-2. Parses it (`BeautifulSoup`) for name, SKU, price tiers, price code,
-   dimensions, and features.
-3. Writes one row to `output/output.csv` — either the parsed data
-   (`status = ok`) or an error message (`status = error`).
+2. Parses it (`BeautifulSoup`) for SKU, price tiers, and price code.
+3. Writes one row to `output/output.csv` per pricing tier — a product
+   with 5 quantity breaks produces 5 rows, all sharing the same SKU and
+   price code.
 4. Moves on to the next row, no matter what happened.
 
 A single bad URL — a 404, a timeout, a page whose markup doesn't match
@@ -110,30 +110,37 @@ Progress is saved to `output/output.csv` every 25 rows, so a crash or a
 | `manu_id` | manufacturer ID (not currently used by the scraper, but required in the header) |
 | `manu_sku` | fallback SKU, used if the page itself doesn't expose one |
 | `product_name` | not currently used by the scraper, but required in the header |
-| `prod_page_url` | the URL to scrape |
+| `prod_page_url` | the URL of the product page to scrape |
 
 Rows with a blank `prod_page_url` are logged and skipped, not treated as errors.
 
 ## Output format
 
-`output/output.csv`, one row per input row:
+`output/output.csv`, one row per pricing tier:
 
 | column | meaning |
 |---|---|
-| `url` | product page URL |
 | `sku` | Item ID parsed from the page, falling back to `manu_sku` from the input CSV |
-| `name` | product name |
-| `price_tiers` | `qty:price` pairs joined by `\|`, e.g. `50:7.57\|200:7.1\|500:6.83` |
-| `min_price` | lowest tier price (best quantity break) |
-| `price_code` | pricing-basis code shown next to "Price" on the page — handles single codes (`5C`), letter-only codes (`BBB`), and combo/range codes (`A to C&C`) |
-| `dimensions` | product dimensions text |
-| `features` | bullet features, joined by `; ` |
-| `status` | `ok` or `error` |
-| `error` | error message when `status = error`, otherwise blank |
+| `quantity` | minimum order quantity for this pricing tier |
+| `price` | unit price at this quantity |
+| `price_code` | pricing-basis code shown next to "Price" on the page — the letter part only (e.g. `C`), with any leading tier-count digit stripped |
 
-A failed row still gets a full CSV row — `status = error`, `error` filled
-in, every other column blank — never a skipped/empty line and never a
-stopped program.
+A product with multiple quantity breaks produces one row per tier, all
+sharing the same `sku` and `price_code`. Example — a product with 5
+tiers becomes:
+
+```
+sku,quantity,price,price_code
+WTV-LG11,30,12.48,C
+WTV-LG11,100,11.75,C
+WTV-LG11,250,11.28,C
+WTV-LG11,500,10.87,C
+WTV-LG11,1000,10.45,C
+```
+
+Failed products (404s, timeouts, parse errors) are **not** written to
+`output.csv` at all — they appear only in the log files. This keeps the
+output file clean: every row in it is valid, importable data.
 
 ## Error handling
 
@@ -192,7 +199,7 @@ custom-crest-scraper/
 ├── data/
 │   └── data.csv              # input: manu_id, manu_sku, product_name, prod_page_url
 ├── output/
-│   └── output.csv            # written by main.py
+│   └── output.csv            # written by main.py — sku, quantity, price, price_code
 ├── logs/
 │   ├── scraper_YYYYMMDD.log  # full run log
 │   └── errors_YYYYMMDD.log   # errors only
@@ -206,27 +213,25 @@ custom-crest-scraper/
 ## Before a full run
 
 Open one product page in a browser, right-click → Inspect, and confirm
-these three things still match the site (they're also documented at the
+these two things still match the site (they're also documented at the
 top of `scraper.py`):
 
 1. An "Item ID:" label followed by the SKU text.
 2. A pricing table whose header row mentions "Price" or "Qty".
-3. A heading containing "Features" followed by a `<ul>` of bullet points.
 
 If the site's HTML has changed, update the corresponding `_parse_*`
 method in `scraper.py` — the rest of the pipeline (retry, logging, CSV
 writing) doesn't need to change.
 
 It's also worth spot-checking a few parsed rows against the live page
-after any run, particularly `features` — the parser takes whatever `<ul>`
-immediately follows the first "Features" heading it finds, so a page
-whose layout puts something else there could get picked up too.
+after any run — compare the quantity breaks and prices in `output.csv`
+against what the product page actually shows.
 
 ## Troubleshooting
 
 | symptom | likely cause |
 |---|---|
-| Every row is `error` | check your internet connection / the site is reachable, or `data.csv`'s `prod_page_url` column is malformed |
+| Every row is missing from `output.csv` | check your internet connection / the site is reachable, or `data.csv`'s `prod_page_url` column is malformed |
 | Console shows `colorlog is not installed` warning | cosmetic only — run `pip install colorlog` to fix, or ignore it |
-| `price_code` is blank on a page that clearly has one | the page's phrasing doesn't match "Price ... (CODE)" or "Price: CODE" — check `_parse_price_code()` in `scraper.py` against that page's actual HTML |
+| `price_code` is blank on a page that clearly has one | the page's phrasing doesn't match the expected pattern — check `_parse_price_code()` in `scraper.py` against that page's actual HTML |
 | Run stops with `Fatal error: ...` before scraping anything | this is a startup failure (e.g. missing/malformed `data.csv`), not a per-row scrape failure — check the message and fix the input file |
