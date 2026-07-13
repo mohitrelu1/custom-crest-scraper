@@ -15,6 +15,13 @@ fields on spec.
 {'sku': ..., 'tiers': [(50, 7.57), (200, 7.10), (500, 6.83)],
  'price_code': ..., 'status': 'ok', 'error': ''}
 
+Note on `price_code`: the page writes it as "<tier count><letter code>"
+(e.g. "5C" for a 5-tier table). The leading digit is just the page's own
+tally of tiers and is stripped before it reaches the result - `price_code`
+in the returned dict (and in output.csv) is the letter part only ("C"),
+via `utils.split_price_code`. A mismatch between that digit and the number
+of tiers actually parsed is logged as a warning, not silently trusted.
+
 `tiers` is a list of (quantity, price) tuples straight from the pricing
 table - main.py is responsible for turning each tuple into its own CSV
 row (one row per quantity/price, not one row per product).
@@ -39,7 +46,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from logger import get_logger
-from utils import clean_price, clean_text, retry
+from utils import clean_price, clean_text, retry, split_price_code
 
 log = get_logger(__name__)
 
@@ -98,7 +105,17 @@ class ProductScraper:
 
             result["sku"] = self._parse_sku(soup) or fallback_sku
             result["tiers"] = self._parse_price_table(soup)
-            result["price_code"] = self._parse_price_code(soup)
+
+            raw_code = self._parse_price_code(soup)
+            tier_count, letter_code = split_price_code(raw_code)
+            result["price_code"] = letter_code
+
+            if tier_count is not None and tier_count != len(result["tiers"]):
+                log.warning(
+                    "Price code tier count mismatch for %s: code says %d tiers "
+                    "but %d were parsed from the price table (raw code=%r)",
+                    url, tier_count, len(result["tiers"]), raw_code,
+                )
 
             result["status"] = "ok"
             log.info(
